@@ -1,55 +1,58 @@
-from datetime import datetime, date
+import json
+import logging
+import random
+from datetime import datetime, date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.models.drone import Drone
 from app.models.task import Task
 from app.models.alert import Alert
-from app.models.telemetry import DroneTelemetrySnapshot
 from app.models.user import User
-from app.schemas.dashboard import DashboardOverview, DroneMapItem
-from app.db.redis import get_redis
+from app.schemas.dashboard import DashboardOverview
+
+logger = logging.getLogger("drone.api")
 
 
 async def get_overview(db: AsyncSession, tenant_id: str) -> DashboardOverview:
-    redis = await get_redis()
+    # 尝试从 Redis 取缓存
     cache_key = f"dashboard:overview:{tenant_id}"
-    import json
-
-    cached = await redis.get(cache_key)
-    if cached:
-        return DashboardOverview(**json.loads(cached))
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        cached = await redis.get(cache_key)
+        if cached:
+            return DashboardOverview(**json.loads(cached))
+    except Exception:
+        redis = None
+        logger.warning("Redis 不可用，跳过大屏缓存")
 
     today_start = datetime.combine(date.today(), datetime.min.time())
 
-    total_drones_r = await db.execute(
+    total_drones = (await db.execute(
         select(func.count()).where(Drone.tenant_id == tenant_id)
-    )
-    total_drones = total_drones_r.scalar_one()
+    )).scalar_one()
 
-    online_r = await db.execute(
+    online_drones = (await db.execute(
         select(func.count()).where(
             Drone.tenant_id == tenant_id,
             Drone.status.in_(["online", "in_task"])
         )
-    )
-    online_drones = online_r.scalar_one()
+    )).scalar_one()
 
-    tasks_today_r = await db.execute(
+    total_tasks_today = (await db.execute(
         select(func.count()).where(
             Task.tenant_id == tenant_id,
-            Task.scheduled_at >= today_start
+            Task.scheduled_at >= today_start,
         )
-    )
-    total_tasks_today = tasks_today_r.scalar_one()
+    )).scalar_one()
 
-    unread_r = await db.execute(
+    unread_alerts = (await db.execute(
         select(func.count()).where(
             Alert.tenant_id == tenant_id,
-            Alert.status == "unread"
+            Alert.status == "unread",
         )
-    )
-    unread_alerts = unread_r.scalar_one()
+    )).scalar_one()
 
     overview = DashboardOverview(
         total_flights_today=total_tasks_today,
@@ -61,36 +64,38 @@ async def get_overview(db: AsyncSession, tenant_id: str) -> DashboardOverview:
         total_tasks_today=total_tasks_today,
     )
 
-    await redis.setex(cache_key, 60, json.dumps(overview.model_dump()))
+    # 写入缓存（可选）
+    try:
+        if redis:
+            await redis.setex(cache_key, 60, json.dumps(overview.model_dump()))
+    except Exception:
+        pass
+
     return overview
 
 
 async def get_map_drones(db: AsyncSession, tenant_id: str) -> list[dict]:
     result = await db.execute(
-        select(Drone, User).join(User, User.id == Drone.current_task_id, isouter=True)
-        .where(Drone.tenant_id == tenant_id)
+        select(Drone).where(Drone.tenant_id == tenant_id)
     )
-    rows = result.all()
+    drones = result.scalars().all()
 
-    items = []
-    for row in rows:
-        drone = row[0]
-        items.append({
-            "id": drone.id,
-            "name": drone.name,
-            "status": drone.status,
-            "longitude": float(drone.longitude) if drone.longitude else None,
-            "latitude": float(drone.latitude) if drone.latitude else None,
-            "battery_level": drone.battery_level,
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "status": d.status,
+            "longitude": float(d.longitude) if d.longitude else None,
+            "latitude": float(d.latitude) if d.latitude else None,
+            "battery_level": d.battery_level,
             "pilot_name": None,
-        })
-    return items
+        }
+        for d in drones
+    ]
 
 
 async def get_traffic_trend(db: AsyncSession, tenant_id: str) -> list[dict]:
-    """返回过去24小时每小时车流量趋势（模拟数据，实际从检测日志聚合）"""
-    from datetime import timedelta
-    import random
+    """返回过去24小时每小时车流量趋势（模拟数据）"""
     now = datetime.utcnow()
     trend = []
     for i in range(24, 0, -1):

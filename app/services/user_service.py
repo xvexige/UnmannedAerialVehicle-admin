@@ -33,14 +33,14 @@ async def get_by_id(db: AsyncSession, user_id: str, tenant_id: str) -> User:
     )
     user = result.scalar_one_or_none()
     if not user:
-        raise NotFoundException("用户不存在")
+        raise NotFoundException("?????")
     return user
 
 
 async def create_user(db: AsyncSession, tenant_id: str, data: UserCreate) -> User:
     existing = await db.execute(select(User).where(User.username == data.username))
     if existing.scalar_one_or_none():
-        raise DuplicateException("用户名已存在")
+        raise DuplicateException("??????")
 
     user_id = f"u_{uuid.uuid4().hex[:12]}"
     user = User(
@@ -55,7 +55,7 @@ async def create_user(db: AsyncSession, tenant_id: str, data: UserCreate) -> Use
         status="active",
     )
     db.add(user)
-    await db.flush()
+    await db.commit()
     return user
 
 
@@ -64,14 +64,14 @@ async def update_user(db: AsyncSession, user_id: str, tenant_id: str, data: User
     update_data = data.model_dump(exclude_none=True)
     for key, val in update_data.items():
         setattr(user, key, val)
-    await db.flush()
+    await db.commit()
     return user
 
 
 async def delete_user(db: AsyncSession, user_id: str, tenant_id: str):
     user = await get_by_id(db, user_id, tenant_id)
     await db.delete(user)
-    await db.flush()
+    await db.commit()
 
 
 async def create_invite_code(
@@ -86,5 +86,5 @@ async def create_invite_code(
         expire_at=datetime.utcnow() + timedelta(hours=expire_hours),
     )
     db.add(invite)
-    await db.flush()
+    await db.commit()
     return invite

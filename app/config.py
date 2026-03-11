@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # 数据库
-    DATABASE_URL: str = "mysql+aiomysql://root:dev_password@localhost:3306/drone_saas"
+    DATABASE_URL: str = "mysql+aiomysql://root:123456@localhost:3306/drone_saas"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

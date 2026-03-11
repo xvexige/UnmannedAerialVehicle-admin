@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -8,8 +10,6 @@ from app.schemas.model import AIModelOut, ModelCompareJobCreate, ModelCompareJob
 from app.models.ai_model import AIModel
 from app.models.model_compare import ModelCompareJob
 from app.models.user import User
-import uuid
-from datetime import datetime
 
 router = APIRouter(prefix="/models", tags=["AI模型管理"])
 
@@ -39,19 +39,21 @@ async def list_models(
     ))
 
 
-@router.get("/{model_id}", response_model=ResponseModel[AIModelOut], summary="模型详情")
-async def get_model(
-    model_id: str,
-    current_user: User = Depends(get_current_user),
+# ⚠️ 具体路径必须放在 /{model_id} 参数路径之前，否则会被拦截
+@router.get("/compare/jobs", response_model=ResponseModel, summary="我的对比任务列表")
+async def list_compare_jobs(
+    current_user: User = Depends(require_roles("enterprise_admin", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    """[权限] 所有登录用户"""
-    result = await db.execute(select(AIModel).where(AIModel.id == model_id))
-    model = result.scalar_one_or_none()
-    if not model:
-        from app.core.exceptions import NotFoundException
-        raise NotFoundException("模型不存在")
-    return ResponseModel.ok(data=AIModelOut.model_validate(model))
+    """[权限] enterprise_admin / analyst"""
+    result = await db.execute(
+        select(ModelCompareJob)
+        .where(ModelCompareJob.tenant_id == current_user.tenant_id)
+        .order_by(ModelCompareJob.created_at.desc())
+        .limit(20)
+    )
+    jobs = result.scalars().all()
+    return ResponseModel.ok(data=[ModelCompareJobOut.model_validate(j) for j in jobs])
 
 
 @router.post("/compare", response_model=ResponseModel[ModelCompareJobOut], summary="提交模型对比任务")
@@ -76,17 +78,16 @@ async def create_compare(
     return ResponseModel.ok(data=ModelCompareJobOut.model_validate(job), message="对比任务已提交")
 
 
-@router.get("/compare/jobs", response_model=ResponseModel, summary="我的对比任务列表")
-async def list_compare_jobs(
-    current_user: User = Depends(require_roles("enterprise_admin", "analyst")),
+@router.get("/{model_id}", response_model=ResponseModel[AIModelOut], summary="模型详情")
+async def get_model(
+    model_id: str,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """[权限] enterprise_admin / analyst"""
-    result = await db.execute(
-        select(ModelCompareJob)
-        .where(ModelCompareJob.tenant_id == current_user.tenant_id)
-        .order_by(ModelCompareJob.created_at.desc())
-        .limit(20)
-    )
-    jobs = result.scalars().all()
-    return ResponseModel.ok(data=[ModelCompareJobOut.model_validate(j) for j in jobs])
+    """[权限] 所有登录用户"""
+    result = await db.execute(select(AIModel).where(AIModel.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        from app.core.exceptions import NotFoundException
+        raise NotFoundException("模型不存在")
+    return ResponseModel.ok(data=AIModelOut.model_validate(model))

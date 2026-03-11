@@ -1,3 +1,4 @@
+import logging
 from fastapi import Depends, Query
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,10 +6,11 @@ from sqlalchemy import select
 from jose import JWTError
 
 from app.db.session import get_db
-from app.db.redis import get_redis
 from app.core.security import decode_token
 from app.core.exceptions import AuthException, PermissionException
 from app.models.user import User
+
+logger = logging.getLogger("drone.api")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v1/auth/login", auto_error=False)
 
@@ -31,10 +33,17 @@ async def get_current_user(
     if not user_id:
         raise AuthException("Token 数据异常")
 
-    redis = await get_redis()
-    jti = payload.get("jti", "")
-    if await redis.get(f"token:blacklist:{jti}"):
-        raise AuthException("Token 已失效，请重新登录")
+    # Redis 黑名单检查（降级：Redis 不可用时跳过，不影响正常登录）
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        jti = payload.get("jti", "")
+        if await redis.get(f"token:blacklist:{jti}"):
+            raise AuthException("Token 已失效，请重新登录")
+    except AuthException:
+        raise
+    except Exception:
+        logger.warning("Redis 不可用，跳过 Token 黑名单检查")
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -46,7 +55,7 @@ async def get_current_user(
 
 
 def require_roles(*roles: str):
-    """角色权限检查工厂，生成依赖函数"""
+    """角色权限检查工厂"""
 
     async def checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role not in roles:

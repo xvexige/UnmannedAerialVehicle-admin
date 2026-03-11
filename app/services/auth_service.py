@@ -79,9 +79,13 @@ async def refresh_access_token(refresh_token: str):
 
 
 async def logout(jti: str, exp: int):
-    redis = await get_redis()
-    ttl = max(exp - int(datetime.now(timezone.utc).timestamp()), 1)
-    await redis.setex(f"token:blacklist:{jti}", ttl, "1")
+    try:
+        redis = await get_redis()
+        ttl = max(exp - int(datetime.now(timezone.utc).timestamp()), 1)
+        await redis.setex(f"token:blacklist:{jti}", ttl, "1")
+    except Exception:
+        import logging
+        logging.getLogger("drone.api").warning("Redis 不可用，logout Token 黑名单写入跳过")
 
 
 async def register_enterprise(db: AsyncSession, data: RegisterRequest):
@@ -117,7 +121,7 @@ async def register_enterprise(db: AsyncSession, data: RegisterRequest):
         status="active",
     )
     db.add(user)
-    await db.flush()
+    await db.commit()
 
     return {"tenant_id": tenant_id, "user_id": user_id}
 
@@ -154,7 +158,7 @@ async def register_by_invite(db: AsyncSession, data: RegisterByInviteRequest):
 
     invite.used_by = user_id
     invite.used_at = datetime.utcnow()
-    await db.flush()
+    await db.commit()
 
     return {"user_id": user_id}
 
@@ -162,8 +166,12 @@ async def register_by_invite(db: AsyncSession, data: RegisterByInviteRequest):
 async def change_password(db: AsyncSession, user: User, old_password: str, new_password: str):
     if not verify_password(old_password, user.password_hash):
         raise AuthException("原密码错误")
+    new_hash = get_password_hash(new_password)
     await db.execute(
         update(User)
         .where(User.id == user.id)
-        .values(password_hash=get_password_hash(new_password))
+        .values(password_hash=new_hash)
     )
+    # FastAPI yield 依赖的 commit 在响应发送后才执行，
+    # 密码变更需要立即提交，否则下一个登录请求看不到新密码
+    await db.commit()

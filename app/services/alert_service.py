@@ -41,7 +41,7 @@ async def get_by_id(db: AsyncSession, alert_id: str, tenant_id: str) -> Alert:
     )
     alert = result.scalar_one_or_none()
     if not alert:
-        raise NotFoundException("告警不存在")
+        raise NotFoundException("?????")
     return alert
 
 
@@ -68,20 +68,24 @@ async def create_alert(db: AsyncSession, tenant_id: str, data: AlertCreate) -> A
         triggered_at=data.triggered_at or datetime.utcnow(),
     )
     db.add(alert)
-    await db.flush()
+    await db.commit()
 
-    from app.db.redis import get_redis
-    redis = await get_redis()
-    await redis.publish("alerts", json.dumps({
-        "channel": "alerts",
-        "tenant_id": tenant_id,
-        "alert_id": alert_id,
-        "type": data.type,
-        "level": data.level,
-        "description": data.description,
-        "snapshot_url": data.snapshot_url,
-        "triggered_at": alert.triggered_at.isoformat(),
-    }))
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.publish("alerts", json.dumps({
+            "channel": "alerts",
+            "tenant_id": tenant_id,
+            "alert_id": alert_id,
+            "type": data.type,
+            "level": data.level,
+            "description": data.description,
+            "snapshot_url": data.snapshot_url,
+            "triggered_at": alert.triggered_at.isoformat(),
+        }))
+    except Exception:
+        import logging
+        logging.getLogger("drone.api").warning("Redis ???????")
 
     return alert
 
@@ -90,7 +94,7 @@ async def mark_read(db: AsyncSession, alert_id: str, tenant_id: str) -> Alert:
     alert = await get_by_id(db, alert_id, tenant_id)
     if alert.status == "unread":
         alert.status = "read"
-    await db.flush()
+    await db.commit()
     return alert
 
 
@@ -100,7 +104,7 @@ async def resolve_alert(db: AsyncSession, alert_id: str, tenant_id: str, resolve
     alert.resolved_by = resolver_id
     alert.resolved_at = datetime.utcnow()
     alert.remark = remark
-    await db.flush()
+    await db.commit()
     return alert
 
 

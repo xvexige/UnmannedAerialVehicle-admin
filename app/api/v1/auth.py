@@ -5,7 +5,7 @@ from app.api.deps import get_db, get_current_user
 from app.schemas.common import ResponseModel
 from app.schemas.auth import (
     LoginRequest, RefreshTokenRequest, RegisterRequest,
-    RegisterByInviteRequest, ChangePasswordRequest, TokenData
+    RegisterByInviteRequest, ChangePasswordRequest, TokenData,
 )
 from app.services import auth_service
 from app.models.user import User
@@ -28,13 +28,19 @@ async def refresh(body: RefreshTokenRequest):
 
 
 @router.post("/logout", response_model=ResponseModel, summary="退出登录")
-async def logout(current_user: User = Depends(get_current_user), request: Request = None):
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
     """[权限] 所有登录用户"""
-    from jose import jwt
+    from jose import JWTError, jwt
     from app.config import settings
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-    await auth_service.logout(payload["jti"], payload["exp"])
+    try:
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        await auth_service.logout(payload["jti"], payload["exp"])
+    except (JWTError, KeyError):
+        pass  # Token 解析失败时忽略黑名单写入，仍视为正常登出
     return ResponseModel.ok(message="已退出登录")
 
 
@@ -74,5 +80,5 @@ async def me(current_user: User = Depends(get_current_user)):
         "tenant_id": current_user.tenant_id,
         "avatar_url": current_user.avatar_url,
         "status": current_user.status,
-        "last_login_at": current_user.last_login_at,
+        "last_login_at": str(current_user.last_login_at) if current_user.last_login_at else None,
     })

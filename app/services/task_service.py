@@ -6,7 +6,7 @@ from sqlalchemy import select, func, update, delete
 from app.models.task import Task, TaskWaypoint
 from app.models.drone import Drone
 from app.core.exceptions import NotFoundException, ParamException
-from app.schemas.task import TaskCreate, TaskUpdate, TaskStatusUpdate
+from app.schemas.task import TaskCreate, TaskUpdate
 from app.schemas.common import PageData
 
 
@@ -38,7 +38,7 @@ async def get_by_id(db: AsyncSession, task_id: str, tenant_id: str) -> Task:
     )
     task = result.scalar_one_or_none()
     if not task:
-        raise NotFoundException("任务不存在")
+        raise NotFoundException("?????")
     return task
 
 
@@ -54,7 +54,7 @@ async def create(db: AsyncSession, tenant_id: str, created_by: str, data: TaskCr
         select(Drone).where(Drone.id == data.drone_id, Drone.tenant_id == tenant_id)
     )
     if not drone_result.scalar_one_or_none():
-        raise NotFoundException("指定无人机不存在")
+        raise NotFoundException("????????")
 
     task_id = f"task_{uuid.uuid4().hex[:10]}"
     task = Task(
@@ -71,7 +71,7 @@ async def create(db: AsyncSession, tenant_id: str, created_by: str, data: TaskCr
         status="pending",
     )
     db.add(task)
-    await db.flush()
+    await db.flush()  # ? flush ?? task_id??????
 
     for wp in data.waypoints:
         waypoint = TaskWaypoint(
@@ -83,14 +83,14 @@ async def create(db: AsyncSession, tenant_id: str, created_by: str, data: TaskCr
         )
         db.add(waypoint)
 
-    await db.flush()
+    await db.commit()
     return task
 
 
 async def update_task(db: AsyncSession, task_id: str, tenant_id: str, data: TaskUpdate) -> Task:
     task = await get_by_id(db, task_id, tenant_id)
     if task.status in ("completed", "cancelled"):
-        raise ParamException("已完成或已取消的任务不可修改")
+        raise ParamException("??????????????")
 
     update_data = data.model_dump(exclude_none=True, exclude={"waypoints"})
     for key, val in update_data.items():
@@ -108,7 +108,7 @@ async def update_task(db: AsyncSession, task_id: str, tenant_id: str, data: Task
             )
             db.add(waypoint)
 
-    await db.flush()
+    await db.commit()
     return task
 
 
@@ -119,7 +119,7 @@ async def update_status(db: AsyncSession, task_id: str, tenant_id: str, status: 
         "in_progress": ["completed", "cancelled"],
     }
     if status not in valid_transitions.get(task.status, []):
-        raise ParamException(f"状态 [{task.status}] 不可转换为 [{status}]")
+        raise ParamException(f"?? [{task.status}] ????? [{status}]")
 
     task.status = status
     if status == "in_progress":
@@ -137,14 +137,14 @@ async def update_status(db: AsyncSession, task_id: str, tenant_id: str, status: 
             )
         )
 
-    await db.flush()
+    await db.commit()
     return task
 
 
 async def delete_task(db: AsyncSession, task_id: str, tenant_id: str):
     task = await get_by_id(db, task_id, tenant_id)
     if task.status == "in_progress":
-        raise ParamException("进行中的任务不可删除")
+        raise ParamException("??????????")
     await db.execute(delete(TaskWaypoint).where(TaskWaypoint.task_id == task_id))
     await db.delete(task)
-    await db.flush()
+    await db.commit()

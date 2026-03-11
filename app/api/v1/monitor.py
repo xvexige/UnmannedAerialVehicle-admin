@@ -1,8 +1,10 @@
+import json
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import json
-import asyncio
 
 from app.api.deps import get_db, require_roles
 from app.schemas.common import ResponseModel
@@ -11,6 +13,7 @@ from app.models.user import User
 from app.core.exceptions import NotFoundException
 
 router = APIRouter(prefix="/monitor", tags=["实时监控"])
+logger = logging.getLogger("drone.api")
 
 
 @router.get("/{drone_id}/stream-info", response_model=ResponseModel, summary="获取视频流信息")
@@ -42,11 +45,15 @@ async def get_latest_telemetry(
     db: AsyncSession = Depends(get_db),
 ):
     """[权限] enterprise_admin / pilot / analyst"""
-    from app.db.redis import get_redis
-    redis = await get_redis()
-    cached = await redis.get(f"drone:location:{drone_id}")
-    if cached:
-        return ResponseModel.ok(data=json.loads(cached))
+    # 优先从 Redis 缓存读取（降级：Redis 不可用时查库）
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        cached = await redis.get(f"drone:location:{drone_id}")
+        if cached:
+            return ResponseModel.ok(data=json.loads(cached))
+    except Exception:
+        logger.warning("Redis 不可用，从数据库查询遥测数据")
 
     from app.models.telemetry import DroneTelemetrySnapshot
     result = await db.execute(
@@ -74,7 +81,7 @@ async def get_latest_telemetry(
     })
 
 
-@router.get("/{drone_id}/telemetry/history", response_model=ResponseModel, summary="遥测历史（过去N条）")
+@router.get("/{drone_id}/telemetry/history", response_model=ResponseModel, summary="遥测历史")
 async def telemetry_history(
     drone_id: str,
     limit: int = Query(50, ge=1, le=500),
@@ -93,25 +100,26 @@ async def telemetry_history(
         .limit(limit)
     )
     snaps = result.scalars().all()
-    return ResponseModel.ok(data=[{
-        "battery_level": s.battery_level,
-        "speed_ms": float(s.speed_ms) if s.speed_ms else None,
-        "altitude": float(s.altitude) if s.altitude else None,
-        "longitude": float(s.longitude) if s.longitude else None,
-        "latitude": float(s.latitude) if s.latitude else None,
-        "recorded_at": s.recorded_at.isoformat(),
-    } for s in reversed(snaps)])
+    return ResponseModel.ok(data=[
+        {
+            "battery_level": s.battery_level,
+            "speed_ms": float(s.speed_ms) if s.speed_ms else None,
+            "altitude": float(s.altitude) if s.altitude else None,
+            "longitude": float(s.longitude) if s.longitude else None,
+            "latitude": float(s.latitude) if s.latitude else None,
+            "recorded_at": s.recorded_at.isoformat(),
+        }
+        for s in reversed(snaps)
+    ])
 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     """
-    WebSocket 实时推送端点
-    订阅消息格式：{"action": "subscribe", "channel": "drone_telemetry"|"alerts", "drone_id": "..."}
+    WebSocket 实时推送端点（Redis 不可用时仅维持心跳连接）
     """
     from app.core.security import decode_token
     from jose import JWTError
-    from app.db.redis import get_redis
 
     try:
         payload = decode_token(token)
@@ -124,27 +132,34 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
         return
 
     await websocket.accept()
-    redis = await get_redis()
-    subscribed_channels: set[str] = set()
+    listener_task = None
 
-    async def redis_listener():
-        pubsub = redis.pubsub()
-        await pubsub.subscribe("telemetry", "alerts", "detections")
-        try:
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                try:
-                    data = json.loads(message["data"])
-                    if data.get("tenant_id") == tenant_id:
-                        await websocket.send_json(data)
-                except Exception:
-                    pass
-        finally:
-            await pubsub.unsubscribe()
-            await pubsub.aclose()
+    # 尝试启动 Redis 订阅（降级：Redis 不可用时跳过实时推送，仅保持连接）
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.ping()  # 测试连通性
 
-    listener_task = asyncio.create_task(redis_listener())
+        async def redis_listener():
+            pubsub = redis.pubsub()
+            await pubsub.subscribe("telemetry", "alerts", "detections")
+            try:
+                async for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                        if data.get("tenant_id") == tenant_id:
+                            await websocket.send_json(data)
+                    except Exception:
+                        pass
+            finally:
+                await pubsub.unsubscribe()
+                await pubsub.aclose()
+
+        listener_task = asyncio.create_task(redis_listener())
+    except Exception:
+        logger.warning("Redis 不可用，WebSocket 仅维持心跳，无实时推送")
 
     try:
         while True:
@@ -154,4 +169,5 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     except WebSocketDisconnect:
         pass
     finally:
-        listener_task.cancel()
+        if listener_task:
+            listener_task.cancel()
