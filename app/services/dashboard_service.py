@@ -74,13 +74,24 @@ async def get_overview(db: AsyncSession, tenant_id: str) -> DashboardOverview:
     return overview
 
 
+# 南昌范围内模拟无人机（用于大屏演示与视频识别入口）
+NANCHANG_CENTER = (115.858, 28.683)
+MOCK_DRONES_NANCHANG = [
+    {"id": "sim_nc_1", "name": "南昌-巡逻机1", "status": "online", "longitude": 115.82, "latitude": 28.71, "battery_level": 85, "pilot_name": None, "simulated": True},
+    {"id": "sim_nc_2", "name": "南昌-巡逻机2", "status": "in_task", "longitude": 115.90, "latitude": 28.65, "battery_level": 72, "pilot_name": None, "simulated": True},
+    {"id": "sim_nc_3", "name": "南昌-巡逻机3", "status": "online", "longitude": 115.88, "latitude": 28.70, "battery_level": 91, "pilot_name": None, "simulated": True},
+    {"id": "sim_nc_4", "name": "南昌-巡逻机4", "status": "online", "longitude": 115.84, "latitude": 28.66, "battery_level": 68, "pilot_name": None, "simulated": True},
+    {"id": "sim_nc_5", "name": "南昌-巡逻机5", "status": "in_task", "longitude": 115.92, "latitude": 28.68, "battery_level": 78, "pilot_name": None, "simulated": True},
+]
+
+
 async def get_map_drones(db: AsyncSession, tenant_id: str) -> list[dict]:
     result = await db.execute(
         select(Drone).where(Drone.tenant_id == tenant_id)
     )
     drones = result.scalars().all()
 
-    return [
+    items = [
         {
             "id": d.id,
             "name": d.name,
@@ -92,6 +103,11 @@ async def get_map_drones(db: AsyncSession, tenant_id: str) -> list[dict]:
         }
         for d in drones
     ]
+    # 合并南昌范围内模拟无人机，便于大屏演示与点击进行本机视频识别
+    for mock in MOCK_DRONES_NANCHANG:
+        mock_copy = {**mock, "longitude": mock["longitude"], "latitude": mock["latitude"]}
+        items.append(mock_copy)
+    return items
 
 
 async def get_traffic_trend(db: AsyncSession, tenant_id: str) -> list[dict]:
